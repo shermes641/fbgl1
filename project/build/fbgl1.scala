@@ -1,6 +1,6 @@
 import sbt._
 
-class FBGNN(info: ProjectInfo) extends DefaultProject(info) {
+class fbgl1(info: ProjectInfo) extends DefaultProject(info) {
 
   object Repositories {
     lazy val EmbeddedRepo         = MavenRepository("Embedded Repo", (info.projectPath / "embedded-repo").asURL.toString)
