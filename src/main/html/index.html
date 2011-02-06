@@ -1,0 +1,1217 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>Akka Facebook WebGL Sample</title>
+
+<script type="text/javascript" src="webgl-utils.js"></script>
+<script src="J3DI.js" type="text/javascript"> </script>
+<script src="J3DIMath.js" type="text/javascript"> </script>
+<script src="crc32.js" type="text/javascript"> </script>
+<link href="http://eoimages.gsfc.nasa.gov/ve/7124/world.topo.200401.3x5400x2700.jpg"/>
+<link href="http://eoimages.gsfc.nasa.gov/ve/7125/world.topo.200402.3x5400x2700.jpg"/>
+<link href="http://eoimages.gsfc.nasa.gov/ve/7126/world.topo.200403.3x5400x2700.jpg"/>
+<link href="http://eoimages.gsfc.nasa.gov/ve/7127/world.topo.200404.3x5400x2700.jpg"/>
+<link href="http://eoimages.gsfc.nasa.gov/ve/7128/world.topo.200405.3x5400x2700.jpg"/>
+<link href="http://eoimages.gsfc.nasa.gov/ve/7129/world.topo.200406.3x5400x2700.jpg"/>
+<link href="http://eoimages.gsfc.nasa.gov/ve/7130/world.topo.200407.3x5400x2700.jpg"/>
+<link href="http://eoimages.gsfc.nasa.gov/ve/7131/world.topo.200408.3x5400x2700.jpg"/>
+<link href="http://eoimages.gsfc.nasa.gov/ve/7132/world.topo.200409.3x5400x2700.jpg"/>
+<link href="http://eoimages.gsfc.nasa.gov/ve/7133/world.topo.200410.3x5400x2700.jpg"/>
+<link href="http://eoimages.gsfc.nasa.gov/ve/7134/world.topo.200411.3x5400x2700.jpg"/>
+<link href="http://eoimages.gsfc.nasa.gov/ve/7135/world.topo.200412.3x5400x2700.jpg"/>
+
+
+<script>
+	 var llrad = 0.017453277;
+	 var pi2 = 1.5757295;
+	 var mouseDown = false;
+    var lastMouseX = 0;
+    var lastMouseY = 0;
+    var worldViewMatrix = new J3DIMatrix4();
+    var earthRadius = 1.0;
+    var earthMonthly = 0.0;
+    var earthMonthlyStep = 0.001;
+    var arc_depth = 3;
+    var coloc_thresh = 0.001;
+    var fountain_node_limit = 5;
+    var fps_ok = true;
+
+	 var poll = true;
+
+	 var subnets;
+	 var subnet_tick = 5000;
+	 var subnetwork = {
+	 	draw: false,
+		loading: false
+	 };
+
+    var user = {
+    	  gl: {},
+        lat:0,
+        long:0,
+        id:gup("user_id"),
+        token:gup("access_token"),
+        friends_loaded: 0,
+        indiv_count: 0,
+        friends: [],
+        locations: [],
+        worker: {}
+    };
+    user.find = function(city)
+    {
+    	for (var f=0; f<user.friends.length; f++) {
+			if (user.friends[f].city == city) {
+				return user.friends[f];
+			}
+    	}
+    	return null;
+    }
+    user.worker = new Worker('user.js');
+    user.worker.msg = "";
+    user.worker.onmessage = function(event)
+    {
+    	user.worker.msg = event.data;
+		setTimeout("process_user_worker_msg()",1)
+    }
+    
+    var query;
+    var ready = false;
+    var old_tex = [];
+    var html_f0;
+    var html_f1;
+    function process_user_worker_msg()
+    {
+    	if (!poll) return;
+    	
+        var data = user.worker.msg.split(":");
+        
+        	//
+			// lat/long of the user
+			//
+        if (data[0] == "loc") {
+            var loc = data[2].split(",");
+            user.lat = parseFloat(loc[0]) * llrad;
+            user.long = parseFloat(loc[1]) * llrad;
+            worldViewMatrix.makeIdentity();
+				var p = TPtoXYZ(0, pi2);
+				var q = TPtoXYZ(0, user.long);
+				var angle = 57.2957795 * Math.acos(p.dot(q)/(q.vectorLength() * p.vectorLength()))            
+            worldViewMatrix.rotate(angle, 0,1,0);
+				p = TPtoXYZ(pi2, 0);
+				q = TPtoXYZ(user.lat, 0);
+				angle = 57.2957795 * Math.acos(p.dot(q)/(q.vectorLength() * p.vectorLength()))            
+            worldViewMatrix.rotate(angle, -1,0,0);
+            
+            //
+				// request locations of friends
+				//
+				document.getElementById("friends0").innerHTML = "Locating friends...";
+           	user.worker.postMessage("friends,,"+user.id+","+user.token);
+        }
+        	//
+        	// friend data
+        	//
+        else if (data[0] == "friends") {
+        			//
+					// list of friend locations
+					//
+	        	if (data[1] == "") {
+	        		var city = "";
+					var locations = data[2].split("&");
+					for (var f=0; f<locations.length; f++) {
+						city = locations[f]
+						if (city == "ready") {
+							ready = true;
+						}
+						else if (city != "" && (city.indexOf("endpoint") == -1) && user.find(city) == null) {
+							var floc = {
+								city: city,
+								lat: 0.0,
+								long: 0.0,
+								crc: 0,				// crc32 of the id list from the server
+								ids: [],				// list of friend ids
+								angle: 0.0,			// relative to user ll
+								co_user: false,
+								arcpoly: {} 		// arc polyline
+							};
+							user.friends.push(floc);
+						}
+					}
+					
+					query = setInterval("query_locations()", 250);
+				}
+					//
+					// location info + ids
+					//
+				else {
+					var loc = user.find(data[1]);
+					if (loc != null) {
+						var city = loc.city;
+						var info = data[2].split("&");
+							//
+							// only update if ids have changed
+							//
+						var crc = crc32(info[2]);
+						if (crc != loc.crc) {
+      					var clean = city.replace("++",", ");
+      					clean = clean.replace("+", " ");
+							document.getElementById("friends1").innerHTML = "   ("+clean+")";
+
+							var n = loc.ids.length;
+							loc.lat = info[0]* llrad;
+							loc.long = info[1]* llrad;
+							loc.ids = info[2].split(",");
+							loc.draw = 0;
+							loc.crc = crc;
+
+							var p = TPtoXYZ(user.lat, user.long);
+							var q = TPtoXYZ(loc.lat, loc.long);
+							loc.angle = Math.acos(p.dot(q)/(q.vectorLength() * p.vectorLength()))
+							
+							if (Math.cos(loc.angle) > (1.0 - coloc_thresh)) {
+								loc.co_user = true;
+							}
+
+							loc.arcpoly.verts = [];
+							var step;
+							var vcount = 90;
+							for (var i=0;i<=vcount;i++) {
+								step = i/vcount;
+								var a = Math.sin((1-step)*loc.angle);
+								var b = Math.sin(step*loc.angle);
+								var d = Math.sin(loc.angle);
+								loc.arcpoly.verts.push((a*p[0] + b*q[0])/d,
+															  (a*p[1] + b*q[1])/d,
+															  (a*p[2] + b*q[2])/d);
+							}
+							loc.arcpoly.vcount = loc.arcpoly.verts.length/3;
+						   loc.arcpoly.vbo = user.gl.createBuffer();
+					      user.gl.bindBuffer(user.gl.ARRAY_BUFFER, loc.arcpoly.vbo);
+    						user.gl.bufferData(user.gl.ARRAY_BUFFER, new Float32Array(loc.arcpoly.verts), user.gl.STATIC_DRAW);
+    						user.indiv_count += loc.ids.length - n;
+
+							//
+							// (re)sort all user friend locations into the locations array
+							//	we do this to gather those that are effectively co-located into a single treatment
+							//	for cleaner viz
+							//
+						var uflox = [];
+
+							//
+							// free on next draw
+							//
+						old_tex.length = 0;
+						for (var l=0; l<user.locations.length; l++) {
+							old_tex.push(user.locations[l].tex.slice());
+						}
+						user.locations.length = 0;
+	
+							//
+							// index
+							//
+						for (var i=0; i<user.friends.length; i++) {
+							uflox.push(i);
+						}
+
+							//
+							// 
+							//					
+						for (var i=0; i<uflox.length; i++) {
+					   	
+					   	if (uflox[i] == -1) continue;
+					   	
+					   	var frefx = user.friends[uflox[i]];
+					   	uflox[i] = -1;
+
+							var nextloc = {
+								flindex: [i],
+								lat: frefx.lat,
+								long: frefx.long,
+								angle: frefx.angle,
+								co_user: false,
+								drawable: false,
+								drawtex: 0,
+								tex: [],
+								fountain: [],
+								ids: frefx.ids
+							};
+							
+								//
+								// group within e
+								//
+							for (var f=0; f<uflox.length; f++) {
+								if (uflox[f] != -1) {
+									var floc = user.friends[uflox[f]];
+									if (Math.abs(frefx.angle - floc.angle) < coloc_thresh) {
+									 
+										nextloc.lat += floc.lat;
+									 	nextloc.long += floc.long;
+									 	nextloc.angle += floc.angle;
+									 	nextloc.ids = nextloc.ids.concat(floc.ids);
+									 	nextloc.flindex.push(f);
+									 	uflox[f] = -1;
+									}
+								}
+							}
+							
+							nextloc.lat /= nextloc.flindex.length;
+							nextloc.long /= nextloc.flindex.length;
+							if (Math.cos(nextloc.angle/nextloc.flindex.length) > (1.0 - coloc_thresh)) {
+								nextloc.co_user = true;
+							}
+							
+							user.locations.push(nextloc);
+							uflocs = null;
+
+						}
+						
+							//
+							// stop polling once all locations complete
+							//
+						//if (poll) {
+						//	user.friends_loaded++;
+						//	if (user.friends_loaded == user.friends.length) {
+						//		poll = false;
+						//	}
+						//}
+
+						document.getElementById("friends0").innerHTML = "Loaded "+user.indiv_count+" friends from "+user.friends.length+" locations"
+						
+
+					   }
+					}
+				}
+        }
+        else if (data[0] == "subnet") {
+         user.gl.deleteBuffer(subnetwork.vbo);
+         subnetwork.draw = false;
+        	subnetwork.verts = data[2].split(",")
+			subnetwork.vcount = subnetwork.verts.length/3;
+		   subnetwork.vbo = user.gl.createBuffer();
+	      user.gl.bindBuffer(user.gl.ARRAY_BUFFER, subnetwork.vbo);
+			user.gl.bufferData(user.gl.ARRAY_BUFFER, new Float32Array(subnetwork.verts), user.gl.STATIC_DRAW);
+			subnetwork.loading = false;
+        }
+        
+      user.worker.msg = "";
+    }
+
+	 var query_loc = 0;
+    function query_locations()
+    {
+      var city = user.friends[query_loc].city;
+		user.worker.postMessage("friends,"+city+","+user.id+","+user.token);
+		if (++query_loc == user.friends.length) {
+			clearInterval(query);
+			if (!ready) {
+				query_loc = 0;
+				document.getElementById("friends1").innerHTML = "";
+				user.worker.postMessage("friends,,"+user.id+","+user.token);
+			}
+		}
+    }
+
+    var scene_anim = {
+
+ 		 phase: 0,
+ 		 laps: 0,
+ 		 val: 0.0,
+		 arc: 0.0,
+ 		 step: 0.075,
+		 maxval: 9*Math.PI
+ 	};
+
+ 		function scene_anim_start()
+ 		 {
+ 			setTimeout("scene_anim_phase_shift()", 5000);
+		 }
+
+		 function scene_anim_phase_shift()
+         {
+        	scene_anim.val = 0.0;
+        	scene_anim.phase = (scene_anim.phase+1) % 2;
+        	scene_anim.laps++;
+		 }
+
+		 function scene_anim_step()
+		 {
+			if (scene_anim.val >= scene_anim.maxval) {
+				scene_anim_phase_shift();
+			} else {
+				scene_anim.val += scene_anim.step;
+			}
+	 		return scene_anim.val;
+		 }
+
+		function scene_anim_step_arcs()
+		{
+			if (scene_anim.arc >= 1.0) {
+				scene_anim.arc = 0.0;
+			} else {
+				scene_anim.arc += 0.001;
+			}
+			return scene_anim.arc;
+		}
+
+
+    function gup( name )
+    {
+      name = name.replace(/[\[]/,"\\\[").replace(/[\]]/,"\\\]");
+      var regexS = "[\\?&]"+name+"=([^&#]*)";
+      var regex = new RegExp( regexS );
+      var results = regex.exec( window.location.href );
+      if( results == null )
+        return "";
+      else
+        return results[1];
+    }
+
+    function start()
+    {
+        scene = scene();
+        if (!scene.gl) return;
+
+        scene.canvas.onmousedown = handleMouseDown;
+        document.onmousewheel = handleMouseWheel;
+        document.onmouseup = handleMouseUp;
+        document.onmousemove = handleMouseMove;
+
+        incAngle = 0.5;
+        framerate = new Framerate("framerate");
+
+
+        $("#fountain_slider").slider({
+                min:1,
+                max:10,
+                value: fountain_node_limit
+            });
+
+        $("#monthly_slider").slider({
+                min:1,
+                max:10,
+                value:1
+            });
+            
+
+		document.getElementById("friends0").innerHTML = "Locating user..."; 
+      user.worker.postMessage("loc,,"+user.id+","+user.token);
+
+      $('input[name=Subnets]').attr('disabled', true);
+      $('input[name=ShowNodes]').attr('checked', true);
+     
+        var f = function() {
+            WebGLUtils.requestAnimationFrame(scene.canvas, f);
+            draw(scene.gl);
+        };
+        f();
+    }
+	
+	 function stop_polling()
+	 {
+	 	poll = false;
+	 }
+
+	 function update_nodes()
+	 {
+    	for (var i=0; i<user.locations.length; i++) {
+    		var uloc = user.locations[i]; 
+	   	if (uloc.drawable) {
+				for (var f=0; f<uloc.fountain.length; f++) {
+					update_node_anim(uloc.fountain[f], uloc)
+				}
+			}
+		}
+	 }
+	 
+	 function update_node_anim(node, uloc)
+	 {
+		node.tex = uloc.drawtex;
+		uloc.drawtex++;
+		if (uloc.drawtex == uloc.tex.length) {
+			uloc.drawtex = 0;
+		}
+
+      var r = Math.random();
+		var p;
+		var q;
+										        		
+		if (r < 0.25) { p = 1.0; q = 1.0; }
+		else if (r < 0.5) { p = -1.0; q = 1.0; }
+		else if (r <0.75) { p = 1.0; q = -1.0; }
+		else { p = -1.0; q = -1.0;}
+			        		
+		node.lat = user.lat + (p * r * 360 * coloc_thresh)
+		node.long = user.long + (q * r * 720 * coloc_thresh)
+		node.vel = 1.0 + r;
+		node.g = -1.0;//-0.9 * node.vel;
+	 }
+	 
+	 function update_subnets() 
+	 {
+	 	var update = $('input[name=Subnets]').attr('checked');
+	 	if (update && !subnetwork.loading) {
+	 		subnetwork.loading = true;
+	 		var where = user.locations[Math.floor(Math.random()*user.locations.length)];
+	 		var who = where.ids[Math.floor(Math.random()*where.ids.length)];
+	 		user.worker.postMessage("subnet,,"+user.id+","+who);
+	 	}
+	 }
+	 
+    function scene()
+    {
+        var canvas = document.getElementById("webgl-canvas");
+        canvas.width = Math.floor(window.innerWidth * 0.80);
+        canvas.height = Math.floor(window.innerHeight * 0.80);
+
+        var gl = WebGLUtils.setupWebGL(canvas);
+        if (!gl)  return;
+
+		  user.gl = gl;	// hack
+        shaders(gl);
+
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.clearDepth(10);
+        gl.enable(gl.DEPTH_TEST);
+        //gl.enable(gl.CULL_FACE);
+        //gl.frontFace(gl.GL_CCW);
+        //gl.cullFace(gl.GL_BACK);
+
+
+        gl.uniform3f(gl.getUniformLocation(gl.program, "lightDir"), 0, 0, 1);
+        gl.uniform1i(gl.getUniformLocation(gl.program, "sampler0"), 0);
+        gl.uniform1i(gl.getUniformLocation(gl.program, "sampler1"), 1);
+        gl.uniform1i(gl.getUniformLocation(gl.program, "sampler2"), 2);
+        gl.uniform1i(gl.getUniformLocation(gl.program, "sampler3"), 3);
+        gl.uniform1i(gl.getUniformLocation(gl.program, "cube0"), 4);
+        gl.uniform1f(gl.getUniformLocation(gl.program, "fEarthMixer"), 1.0);
+
+
+        gl.enable(gl.TEXTURE_2D);
+
+        gl.earth = makeSphere(gl, earthRadius, 90, 180);
+        gl.count = 0;
+        var earthTex = [];
+        earthTex.push(loadImageTexture(gl, "http://eoimages.gsfc.nasa.gov/ve/7124/world.topo.200401.3x5400x2700.jpg"));
+        earthTex.push(loadImageTexture(gl, "http://eoimages.gsfc.nasa.gov/ve/7125/world.topo.200402.3x5400x2700.jpg"));
+        earthTex.push(loadImageTexture(gl, "http://eoimages.gsfc.nasa.gov/ve/7126/world.topo.200403.3x5400x2700.jpg"));
+        earthTex.push(loadImageTexture(gl, "http://eoimages.gsfc.nasa.gov/ve/7127/world.topo.200404.3x5400x2700.jpg"));
+        earthTex.push(loadImageTexture(gl, "http://eoimages.gsfc.nasa.gov/ve/7128/world.topo.200405.3x5400x2700.jpg"));
+        earthTex.push(loadImageTexture(gl, "http://eoimages.gsfc.nasa.gov/ve/7129/world.topo.200406.3x5400x2700.jpg"));
+        earthTex.push(loadImageTexture(gl, "http://eoimages.gsfc.nasa.gov/ve/7130/world.topo.200407.3x5400x2700.jpg"));
+        earthTex.push(loadImageTexture(gl, "http://eoimages.gsfc.nasa.gov/ve/7131/world.topo.200408.3x5400x2700.jpg"));
+        earthTex.push(loadImageTexture(gl, "http://eoimages.gsfc.nasa.gov/ve/7132/world.topo.200409.3x5400x2700.jpg"));
+        earthTex.push(loadImageTexture(gl, "http://eoimages.gsfc.nasa.gov/ve/7133/world.topo.200410.3x5400x2700.jpg"));
+        earthTex.push(loadImageTexture(gl, "http://eoimages.gsfc.nasa.gov/ve/7134/world.topo.200411.3x5400x2700.jpg"));
+        earthTex.push(loadImageTexture(gl, "http://eoimages.gsfc.nasa.gov/ve/7135/world.topo.200412.3x5400x2700.jpg"));
+        gl.earthTex = earthTex;
+
+        // Create some matrices to use later and save their locations in the shaders
+        gl.mvMatrix = new J3DIMatrix4();
+        gl.u_normalMatrixLoc = gl.getUniformLocation(gl.program, "u_normalMatrix");
+        gl.normalMatrix = new J3DIMatrix4();
+        gl.u_modelViewProjMatrixLoc = gl.getUniformLocation(gl.program, "u_modelViewProjMatrix");
+        gl.mvpMatrix = new J3DIMatrix4();
+
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.perspectiveMatrix = new J3DIMatrix4();
+        gl.perspectiveMatrix.perspective(30, canvas.width/canvas.height, 1, 10000);
+        gl.perspectiveMatrix.lookat(0, 0, 4, 0, 0, 0, 0, 1, 0);
+
+		  scene_anim_start();
+
+        return {
+            gl: gl,
+            canvas: canvas
+        };
+    }
+
+    function shaders(gl)
+    {
+        gl.console = ("console" in window) ? window.console : { log: function() { } };
+
+        gl.program = gl.createProgram();
+        if (!gl.program) return;
+
+        var slist = ["earth-v", "earth-f"];
+        for (var s=0; s<slist.length; s++) {
+            var shader = loadShader(gl, slist[s]);
+            if (!shader) return;
+
+            gl.attachShader(gl.program, shader);
+        }
+
+        gl.bindAttribLocation(gl.program, 0, "vNormal");
+        gl.bindAttribLocation(gl.program, 1, "vTexCoord");
+        gl.bindAttribLocation(gl.program, 2, "vPosition");
+
+        gl.linkProgram(gl.program);
+
+        var linked = gl.getProgramParameter(gl.program, gl.LINK_STATUS);
+        if (!linked) {
+            var error = gl.getProgramInfoLog(gl.program);
+            gl.console.log("Error in program linking:"+error);
+
+            gl.deleteProgram(gl.program);
+            return;
+        }
+
+        gl.useProgram(gl.program);
+    }
+
+    function draw(gl)
+    {
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        // Make a model/view matrix.
+        gl.mvMatrix.makeIdentity();
+
+        // Construct the normal matrix from the model-view matrix and pass it in
+        gl.normalMatrix.load(gl.mvMatrix);
+        gl.normalMatrix.invert();
+        gl.normalMatrix.transpose();
+        gl.normalMatrix.setUniform(gl, gl.u_normalMatrixLoc, false);
+
+        // Construct the model-view * projection matrix and pass it in
+        gl.mvpMatrix.load(gl.perspectiveMatrix);
+        gl.mvpMatrix.multiply(gl.mvMatrix);
+        gl.mvpMatrix.setUniform(gl, gl.u_modelViewProjMatrixLoc, false);
+
+        drawEarth(gl)
+        drawUser(gl);
+        drawFriendLocs(gl);
+
+        gl.flush();
+        framerate.snapshot();
+        
+        var fps = parseInt(document.getElementById("framerate").innerHTML);
+        if (fps < 20) fps_ok = false;
+        if (fps > 30) fps_ok = true;
+    }
+
+	 var month = 0;
+    function drawEarth(gl)
+    {
+    		var rot = $('input[name=RotateEarth]').attr('checked');
+    		if (rot) {
+    			worldViewMatrix.rotate(5*llrad, 0, 1, 0);
+    		}
+    		
+			var rate = $( "#monthly_slider" ).slider( "option", "value" );
+			var text;
+			switch(Math.ceil(rate)) {
+				case 0: case 1: case 2: case 3: text = "slow"; break;
+				case 4: case 5: case 6: case 7: text = "moderate"; break;
+				default: text = "fast"
+			};
+			document.getElementById("monthly_slider_value").innerHTML = text;
+			rate *= earthMonthlyStep;
+			
+		    var tex = [[gl.earthTex[month], gl.TEXTURE0, gl.TEXTURE_2D],
+   		   	  	   [gl.earthTex[month+1], gl.TEXTURE1, gl.TEXTURE_2D]];
+   	   		   	   
+	        gl.uniform1f(gl.getUniformLocation(gl.program, "bUseCubeSampler"), false);
+   	     gl.uniform1i(gl.getUniformLocation(gl.program, "nAnimPhase"), -1);
+			  gl.uniform1f(gl.getUniformLocation(gl.program, "fArcTime"), -1);
+	        gl.uniform1f(gl.getUniformLocation(gl.program, "fEarthMixer"), earthMonthly);
+
+   	     drawSphere(gl, gl.earth, 0, 0, 0, tex);
+      	  earthMonthly += rate;
+	        if (earthMonthly > 1.0) {
+   	     		earthMonthly = 0.0;
+      	   	if (++month == 11) month = 0;
+        	  }
+    }
+
+    var user_pix = ["https://graph.facebook.com/"+user.id+"/picture?access_token="+user.token];
+    function drawUser(gl)
+    {
+        if ((user.lat == 0) && (user.long == 0)) return;
+
+        if (!gl.user) {
+            gl.user = makeSphere(gl, 0.0137*earthRadius, 9, 18);
+            gl.userTex = loadCubeMapTexture(gl, user_pix);
+        }
+
+        var vert = TPtoXYZ(user.lat, user.long);
+        vert.multVecMatrix(worldViewMatrix);
+
+        gl.uniform1f(gl.getUniformLocation(gl.program, "bUseCubeSampler"), true);
+        gl.uniform1i(gl.getUniformLocation(gl.program, "nAnimPhase"), -1);
+		  gl.uniform1f(gl.getUniformLocation(gl.program, "fArcTime"), -1);
+
+        var tex = [[gl.userTex, gl.TEXTURE4, gl.TEXTURE_CUBE_MAP]];
+        drawSphere(gl, gl.user, vert[0], vert[1], vert[2], tex);
+    }
+
+    function drawFriendLocs(gl)
+    {
+    	var pause = $('input[name=Pause]').attr('checked');
+    	var node_draw = $('input[name=ShowNodes]').attr('checked'); 
+    	var node_max = $('input[name=MaxNodes]').attr('checked');
+
+		if (node_draw) {
+	   	for (var i=0; i<user.locations.length; i++) {
+   	 		var uloc = user.locations[i];
+  	 				//
+					// prep the location for drawing
+					//	group their pictures in 6's and build a cube map
+					//	there will be count/6 + count%6 spheres for each location ...
+					//
+	   		if (uloc.drawable == false) {
+  		 			var fcount = uloc.ids.length;
+  	 				var r = fcount%6;
+	  	 			var n = fcount-r;
+					for (var j=0; j<n/6; j++) {
+						var fpix = [];
+						for (var f=0; f<6; f++) {
+							fpix.push("https://graph.facebook.com/"+uloc.ids[(j*6)+f]+"/picture?access_token="+user.token);
+						}
+						uloc.tex.push(loadCubeMapTexture(gl, fpix));
+					}
+					var fpix = [];
+					for (var j=fcount-r; j<fcount; j++) {
+						fpix.push("https://graph.facebook.com/"+uloc.ids[j]+"/picture?access_token="+user.token);
+					}
+					uloc.tex.push(loadCubeMapTexture(gl, fpix));
+					uloc.fountain.length = 0;
+					for (var t=0; t<uloc.tex.length; t++) {
+						var node = {
+							on: false,
+							lat: 0,
+							long: 0,
+							tex: 0,
+							vel: 0.0,
+							g: 0.0,
+							start: 0.5 * scene_anim.maxval * Math.random(),
+							step: 0.0
+						};
+						uloc.fountain.push(node);
+					}
+					uloc.drawable = true;
+				}
+			}
+		}
+
+	   var arc_t;
+	   if (pause) arc_t = scene_anim.arc
+	   else arc_t = scene_anim_step_arcs();
+	   
+	   var phi;
+	   if (pause) phi = scene_anim.val
+	   else phi = scene_anim_step();
+	   
+		var user_vert = TPtoXYZ(user.lat, user.long);
+      user_vert.multVecMatrix(worldViewMatrix);
+
+  		gl.uniform1i(gl.getUniformLocation(gl.program, "bUseCubeSampler"), true);
+		gl.uniform1i(gl.getUniformLocation(gl.program, "nAnimPhase"), scene_anim.phase);
+   	gl.uniform1f(gl.getUniformLocation(gl.program, "fPhaseVal"), phi);
+
+		for (var i=0; i<user.friends.length; i++) {
+
+			//
+			// draw the network edges to each friend loc
+			//
+	   	gl.uniform1f(gl.getUniformLocation(gl.program, "fArcTime"), -1);
+			drawNet(gl, user.friends[i].arcpoly);
+			
+			
+			/** 
+			 * not really worth the fps in the end...
+				//
+				// run a friend node along the edge (unless co-located with user) 
+				//
+			if (!node_draw && !user.friends[i].co_user) {
+			
+				gl.enable(gl.BLEND);
+				//gl.disable(gl.DEPTH_TEST);
+				gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+				
+        		var vert = TPtoXYZ(user.friends[i].lat, user.friends[i].long);
+        		vert.multVecMatrix(worldViewMatrix);
+        		
+        		var angle = user.friends[i].angle;
+				var a =     Math.sin((1.0-arc_t)*angle);
+				var b =     Math.sin(arc_t*angle);
+				var denom = Math.sin(angle);
+					
+				vert[0] = (a*user_vert[0] + b*vert[0])/denom;
+				vert[1] = (a*user_vert[1] + b*vert[1])/denom;
+				vert[2] = (a*user_vert[2] + b*vert[2])/denom;
+
+     			var tex = [[gl.userTex, gl.TEXTURE4, gl.TEXTURE_CUBE_MAP]];
+				gl.uniform1f(gl.getUniformLocation(gl.program, "fArcTime"), arc_t);
+				drawArc(gl, gl.user, vert[0], vert[1], vert[2], tex);
+		  		gl.uniform1f(gl.getUniformLocation(gl.program, "fArcTime"), -1);
+
+				gl.disable(gl.BLEND);
+				//gl.enable(gl.DEPTH_TEST);
+			}
+			***/
+		}
+		
+		
+			//
+			// draw friend nodes at each location
+			//
+		if (node_draw) {
+	    	for (var i=0; i<user.locations.length; i++) {
+   	 		var uloc = user.locations[i]; 
+	   		if (uloc.drawable) {
+
+        			var vert = TPtoXYZ(uloc.lat, uloc.long);
+        			vert.multVecMatrix(worldViewMatrix);
+
+						//
+						// draw one node
+						//
+					if (!uloc.co_user && uloc.tex.length == 1) {
+		        		var tex = [[uloc.tex[uloc.drawtex], gl.TEXTURE4, gl.TEXTURE_CUBE_MAP]];
+   		     		drawSphere(gl, gl.user, vert[0], vert[1], vert[2], tex);
+					}
+						//
+						// 'fountain' the nodes
+						//
+					else {
+					
+						var limit = $( "#fountain_slider" ).slider( "option", "value" );
+						document.getElementById("fountain_slider_value").innerHTML = limit;
+
+						if (node_max) limit = uloc.fountain.length;
+						limit = Math.min(limit, uloc.fountain.length)
+						for (var f=0; f<limit; f++) {
+							var node = uloc.fountain[f];
+								//
+								// starter
+								//
+							if ((node.on == false) && (node.start < scene_anim.laps)) {
+								node.on = true;
+								update_node_anim(node, uloc);
+							}
+						
+							if (node.on) {
+								gl.uniform1i(gl.getUniformLocation(gl.program, "bFountainOn"), true);
+								gl.uniform4f(gl.getUniformLocation(gl.program, "vFountainInfo"), node.lat, node.long, node.vel, node.g);
+								gl.uniform1f(gl.getUniformLocation(gl.program, "fPhaseVal"), node.step);
+							
+								if (!pause) {
+									node.step += scene_anim.step;
+									if (node.step >= scene_anim.maxval) {
+										node.step = 0.0;
+										update_node_anim(node, uloc);
+									}
+								}
+
+				        		var tex = [[uloc.tex[node.tex], gl.TEXTURE4, gl.TEXTURE_CUBE_MAP]];
+		   		     		drawSphere(gl, gl.user, vert[0], vert[1], vert[2], tex);
+								gl.uniform1i(gl.getUniformLocation(gl.program, "bFountainOn"), false);
+							}
+						}
+					}
+				}
+				
+				for (var l=0; l<old_tex.length; l++) {
+					for (var t=0; t<old_tex[l].length; t++) {
+						gl.deleteTexture(old_tex[l][t]);
+					}
+				}
+			}
+ 		}
+    }
+
+    function drawSphere(gl, who, x, y, z, textures)
+    {
+        gl.enableVertexAttribArray(0);
+        gl.enableVertexAttribArray(1);
+        gl.enableVertexAttribArray(2);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, who.vertexObject);
+        gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, who.normalObject);
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, who.texCoordObject);
+        gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, who.indexObject);
+
+        // generate the model-view matrix
+        var mvMatrix = new J3DIMatrix4();
+        mvMatrix.translate(x,y,z);
+        mvMatrix.multiply(worldViewMatrix);
+
+        // construct the normal matrix from the model-view matrix
+        var normalMatrix = new J3DIMatrix4(mvMatrix);
+        normalMatrix.invert();
+        normalMatrix.transpose();
+        normalMatrix.setUniform(gl, gl.getUniformLocation(gl.program, "u_normalMatrix"), false);
+
+        // construct the model-view * projection matrix
+        var mvpMatrix = new J3DIMatrix4(gl.perspectiveMatrix);
+        mvpMatrix.multiply(mvMatrix);
+        mvpMatrix.setUniform(gl, gl.getUniformLocation(gl.program, "u_modelViewProjMatrix"), false);
+
+        for (var t=0; t<textures.length; t++) {
+            gl.activeTexture(textures[t][1]);
+            gl.bindTexture(textures[t][2], textures[t][0]);
+        }
+        gl.drawElements(gl.TRIANGLES, who.numIndices, gl.UNSIGNED_SHORT, 0);
+    }
+    
+   function drawNet(gl, arcpoly)
+   {
+      gl.disableVertexAttribArray(0);
+      gl.disableVertexAttribArray(1);
+     	gl.enableVertexAttribArray(2);
+	   //gl.lineWidth(0.5);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, arcpoly.vbo);
+      gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
+
+      var mvMatrix = new J3DIMatrix4();
+      mvMatrix.multiply(worldViewMatrix);
+		
+      var normalMatrix = new J3DIMatrix4(mvMatrix);
+      normalMatrix.invert();
+      normalMatrix.transpose();
+      normalMatrix.setUniform(gl, gl.getUniformLocation(gl.program, "u_normalMatrix"), false);
+
+      // construct the model-view * projection matrix
+      var mvpMatrix = new J3DIMatrix4(gl.perspectiveMatrix);
+      mvpMatrix.multiply(mvMatrix);
+      mvpMatrix.setUniform(gl, gl.getUniformLocation(gl.program, "u_modelViewProjMatrix"), false);
+      
+      gl.uniform1i(gl.getUniformLocation(gl.program, "bArcPolyline"), true);
+    	gl.drawArrays(gl.LINE_STRIP, 0, arcpoly.vcount);
+
+		var draw = $('input[name=Subnets]').attr('checked'); 
+		if (subnetwork.draw && !subnetwork.loading && draw) {
+      	gl.bindBuffer(gl.ARRAY_BUFFER, subnetwork.vbo);
+      	gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
+    		gl.drawArrays(gl.LINE_STRIP, 0, subnetwork.vcount);
+		}
+		
+		gl.uniform1i(gl.getUniformLocation(gl.program, "bArcPolyline"), false);
+   }
+
+	function drawArc(gl, who, x, y, z, textures)
+	{
+        gl.enableVertexAttribArray(0);
+        gl.enableVertexAttribArray(1);
+        gl.enableVertexAttribArray(2);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, who.vertexObject);
+        gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, who.normalObject);
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, who.texCoordObject);
+        gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, who.indexObject);
+
+        // generate the model-view matrix
+        var mvMatrix = new J3DIMatrix4();
+        mvMatrix.translate(x,y,z);
+        mvMatrix.multiply(worldViewMatrix);
+		  mvMatrix.scale(0.25, 0.25, 0.25);
+
+        // construct the normal matrix from the model-view matrix
+        var normalMatrix = new J3DIMatrix4(mvMatrix);
+        normalMatrix.invert();
+        normalMatrix.transpose();
+        normalMatrix.setUniform(gl, gl.getUniformLocation(gl.program, "u_normalMatrix"), false);
+
+        // construct the model-view * projection matrix
+        var mvpMatrix = new J3DIMatrix4(gl.perspectiveMatrix);
+        mvpMatrix.multiply(mvMatrix);
+        mvpMatrix.setUniform(gl, gl.getUniformLocation(gl.program, "u_modelViewProjMatrix"), false);
+
+        for (var t=0; t<textures.length; t++) {
+            gl.activeTexture(textures[t][1]);
+            gl.bindTexture(textures[t][2], textures[t][0]);
+        }
+
+        gl.drawElements(gl.TRIANGLES, who.numIndices, gl.UNSIGNED_SHORT, 0);
+	}
+
+    function TPtoXYZ(theta, phi)
+    {
+        return new J3DIVector3(-1*earthRadius*Math.cos(theta)*Math.cos(phi),
+                                  earthRadius*Math.sin(theta),
+                                  earthRadius*Math.cos(theta)*Math.sin(phi));
+    }
+
+  function handleMouseDown(event) {
+    mouseDown = true;
+    lastMouseX = event.clientX;
+    lastMouseY = event.clientY;
+  }
+
+  function handleMouseUp(event) {
+    mouseDown = false;
+  }
+
+  function handleMouseMove(event) {
+    if (!mouseDown) {
+      return;
+    }
+    var newX = event.clientX;
+    var newY = event.clientY;
+
+    var deltaX = newX - lastMouseX
+    var newRotationMatrix = new J3DIMatrix4();
+    newRotationMatrix.rotate(deltaX / 10, 0,1,0);
+
+    var deltaY = newY - lastMouseY;
+    var newSecondRotMat = new J3DIMatrix4();
+    newSecondRotMat.rotate(deltaY / 10, 1,0,0);
+
+    newRotationMatrix.multiply(newSecondRotMat);
+    worldViewMatrix.multiply(newRotationMatrix);
+
+    lastMouseX = newX
+    lastMouseY = newY;
+  }
+
+  function handleMouseWheel(e)
+  {
+    	var nDelta = 0;
+    	if (!e) { // For IE, access the global (window) event object
+        e = window.event;
+    	}
+    	if ( e.wheelDelta ) { // IE and Opera
+        nDelta= e.wheelDelta;
+        if ( window.opera ) {  // Opera has the values reversed
+            nDelta= -nDelta;
+        }
+    	}
+    	else if (e.detail) { // Mozilla FireFox
+        nDelta= -e.detail;
+    	}
+    	if (nDelta > 0) {
+        worldViewMatrix.scale(1.037);
+    	}
+    	if (nDelta < 0) {
+        worldViewMatrix.scale(0.9737);
+    	}
+    	if ( e.preventDefault ) {  // Mozilla FireFox
+        e.preventDefault();
+    	}
+    	e.returnValue = false;  // cancel default action
+	}
+
+</script>
+
+
+<script id="earth-v" type="x-shader/x-vertex">
+        uniform mat4 u_modelViewProjMatrix;
+        uniform mat4 u_normalMatrix;
+        uniform vec3 lightDir;
+        uniform float fPhaseVal;
+        uniform int   nAnimPhase;
+        uniform bool  bFountainOn;
+        uniform vec4  vFountainInfo;
+		  uniform float fArcTime;
+        uniform bool  bArcPolyline;
+
+        attribute vec3 vNormal;
+        attribute vec4 vTexCoord;
+        attribute vec4 vPosition;
+        attribute vec4 vPosition2;
+
+        varying float v_Dot;
+        varying vec3  v_Normal;
+        varying vec2  v_texCoord;
+
+			//
+			// manual quat rot
+			//
+        mat4 rotate(in vec3 axis, in float angle)
+        {
+        		angle = angle*0.5;
+        		float s = sin(angle);
+        		float x = axis.x*s;
+        		float y = axis.y*s;
+        		float z = axis.z*s;
+        		float w = cos(angle);
+
+        		float x2 = x+x;
+        		float y2 = y+y;
+        		float z2 = z+z;
+        		float xx = x*x2;
+        		float yy = y*y2;
+        		float zz = z*z2;
+        		float xy = x*y2;
+        		float yz = y*z2;
+        		float zx = z*x2;
+        		float wx = w*x2;
+        		float wy = w*y2;
+        		float wz = w*z2;
+
+        		mat4 r;
+        		r[0][0] = 1.0-(yy+zz);
+        		r[1][0] = xy-wz;
+        		r[2][0] = zx+wy;
+        		r[3][0] = 0.0;
+        		r[0][1] = xy+wz;
+        		r[1][1] = 1.0-(xx+zz);
+        		r[2][1] = yz-wx;
+        		r[3][1] = 0.0;
+        		r[0][2] = zx-wy;
+        		r[1][2] = yz+wx;
+        		r[2][2] = 1.0-(xx+yy);
+        		r[3][2] = 0.0;
+        		r[0][3] = 0.0;
+        		r[1][3] = 0.0;
+        		r[2][3] = 0.0;
+        		r[3][3] = 1.0;
+        		return r;
+		  }
+
+        void main()
+        {
+        		float pi = 3.14159;
+        		float fivepi = 15.725795;
+        		float ninepi = 28.27431;
+        		float thirty = 0.5236;
+				vec4 pos = vPosition;
+				
+            	//
+	        		// drawing network nodes (spheres for user or friends)
+	        		//
+            if (!bArcPolyline) {
+            		//
+						// friends - rotating Y
+						//
+            	if (nAnimPhase == 0) {
+            		mat4 rotX = rotate(vec3(1,0,0), thirty);
+	            	mat4 rotY = rotate(vec3(0,1,0), fPhaseVal);
+   	         	pos = rotX * rotY * pos;
+            	}
+            		//
+						// friends - rotating X
+						//
+   	         else if (nAnimPhase == 1) {
+      	      	mat4 rotX = rotate(vec3(1,0,0), thirty+fPhaseVal);
+         	   	mat4 rotY = rotate(vec3(0,1,0), pi);
+            		pos = rotX * rotY * pos;
+					}
+					
+            		//
+						// location fountain effect
+						//
+					if (bFountainOn) {
+						float t = smoothstep(0.0, ninepi, fPhaseVal);
+						vec3 dir = vec3(cos(vFountainInfo.x)*cos(vFountainInfo.y)*(-1.0), sin(vFountainInfo.x), cos(vFountainInfo.x)*sin(vFountainInfo.y));
+						dir = dir * vFountainInfo.z;
+						pos.xyz = pos.xyz + (dir.xyz * t) + (t * t  * vFountainInfo.w * dir.xyz);
+					}
+
+            	v_texCoord = vTexCoord.st;
+            	vec4 transNormal = u_normalMatrix * vec4(vNormal,1);
+            	v_Dot = max(dot(normalize(transNormal.xyz), lightDir), 0.0);
+            	v_Normal = vNormal;
+            }
+            
+        		gl_Position = u_modelViewProjMatrix * pos;
+        }
+</script>
+
+<script id="earth-f" type="x-shader/x-fragment">
+#ifdef GL_ES
+    precision mediump float;
+#endif
+
+        uniform sampler2D   sampler0;
+        uniform sampler2D   sampler1;
+        uniform sampler2D   sampler2;
+        uniform sampler2D   sampler3;
+        uniform samplerCube cube0;
+        uniform bool        bUseCubeSampler;
+        uniform bool			 bArcPolyline;
+        uniform float 		 fArcTime;
+        uniform float       fEarthMixer;
+
+        varying float v_Dot;
+        varying vec3  v_Normal;
+        varying vec2  v_texCoord;
+
+
+        void main()
+        {
+        		if (bArcPolyline) {
+        			gl_FragColor = vec4(0.937,0.937,0.937,1.0);
+            }
+	         else if (bUseCubeSampler) {
+	         	float alpha = 1.0;
+	         	if (fArcTime > 0.0) {
+	         		alpha = clamp(1.0 - fArcTime, 0.5, 1.0);
+	         	}
+   	         vec3 color = textureCube(cube0, v_Normal).xyz;
+   	        	gl_FragColor = vec4(color, alpha);
+      	   }
+         	else {
+					float tween = fEarthMixer;
+            	vec3 color1 = texture2D(sampler0, v_texCoord).rgb;
+	            vec3 color2 = texture2D(sampler1, v_texCoord).rgb;
+               color1 *= (1.0 - tween);
+               color2 *= tween;
+               vec3 color = vec3(0.1, 0.1, 0.1) + vec3(color1 + color2);
+
+               gl_FragColor = vec4(color * v_Dot, 1.0);
+        	  }
+        }
+</script>
+
+
+<link href="http://ajax.googleapis.com/ajax/libs/jqueryui/1.8/themes/base/jquery-ui.css" rel="stylesheet" type="text/css"/>
+<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.4/jquery.min.js"></script>
+<script src="http://ajax.googleapis.com/ajax/libs/jqueryui/1.8/jquery-ui.min.js"></script>
+<style type="text/css">
+    canvas {
+        border: 2px solid black;
+    }
+    #fountain_slider { margin: 10px; width:100px; }
+    #monthly_slider { margin: 10px; width:100px; }
+</style>
+</head>
+
+<body onload="start()">
+<canvas id="webgl-canvas">
+    If you're seeing this your web browser doesn't support the &lt;canvas>&gt; element. Ouch!
+</canvas>
+<div id="framerate"></div>
+
+<table>
+<tr>
+<td>Show subnets <input type="checkbox" name="Subnets" /></td>
+<td>          </div></td>
+<td><div id="friends0"></div></td>
+<td><div id="friends1"></div></td>
+</tr>
+<tr>
+<td>Show nodes <input type="checkbox" name="ShowNodes" /></td>
+<td><div id="friends_ctrl">Pause <input type="checkbox" name="Pause" /></div></td>
+</tr>
+</table>
+<table>
+<tr>
+<td>Max nodes <input type="checkbox" name="MaxNodes" /></td>
+<td></td>
+<td><div id="fountain_slider"></div></td>
+<td><div id="fountain_slider_value"></div></td>
+</tr>
+<tr>
+<td>Rotate Earth <input type="checkbox" name="RotateEarth" /></td>
+<td>  Season change rate </td><td><div id="monthly_slider"></div></td><td><div id="monthly_slider_value"></div></td>
+</tr>
+</table>
+
+</body>
+
+</html>
