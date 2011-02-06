@@ -95,13 +95,13 @@
             user.lat = parseFloat(loc[0]) * llrad;
             user.long = parseFloat(loc[1]) * llrad;
             worldViewMatrix.makeIdentity();
-				var p = TPtoXYZ(0, pi2);
-				var q = TPtoXYZ(0, user.long);
-				var angle = 57.2957795 * Math.acos(p.dot(q)/(q.vectorLength() * p.vectorLength()))            
+            var p = TPtoXYZ(0, 0);
+	    		var q = TPtoXYZ(0, user.long);
+	    		var angle = 90 + (57.2957795 * Math.acos(p.dot(q)/(q.vectorLength() * p.vectorLength())));            
             worldViewMatrix.rotate(angle, 0,1,0);
-				p = TPtoXYZ(pi2, 0);
-				q = TPtoXYZ(user.lat, 0);
-				angle = 57.2957795 * Math.acos(p.dot(q)/(q.vectorLength() * p.vectorLength()))            
+	    		p = TPtoXYZ(0, 0);
+	    		q = TPtoXYZ(user.lat, 0);
+	    		angle = 57.2957795 * Math.acos(p.dot(q)/(q.vectorLength() * p.vectorLength()));            
             worldViewMatrix.rotate(angle, -1,0,0);
             
             //

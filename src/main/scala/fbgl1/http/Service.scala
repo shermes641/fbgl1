@@ -25,7 +25,11 @@ class Service extends Actor with Endpoint
         //
         // return the requested user actor
         //
-        (Service.cache !! User(id, "")).get.asInstanceOf[ActorRef]
+        try {
+        	(Service.cache !! User(id, "")).get.asInstanceOf[ActorRef]
+        } catch {
+        	case _ => Actor.actorOf(new Actor{def receive = {case req:RequestMethod => req NotFound "Unknown User"}}).start
+        }
       }
       else {
         val actor = Actor.actorOf[PageActor].start

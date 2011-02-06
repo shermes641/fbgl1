@@ -13,6 +13,7 @@ class UserActor(id:String) extends Actor
 {
   import collection.mutable.HashMap
   import java.net.URLEncoder
+  import org.apache.http.client.HttpResponseException
   import org.apache.http.client.methods.HttpGet
   import org.apache.http.impl.client. {DefaultHttpClient, BasicResponseHandler}
   import org.codehaus.jackson._
@@ -121,75 +122,84 @@ class UserActor(id:String) extends Actor
       //
       // look up friends
       //
-      val client = new DefaultHttpClient
-      val encoded = URLEncoder.encode(token, "UTF-8")
-      val uri = Service.GraphAPI+"/"+id+Service.Friends+"?"+Service.Token+"="+encoded
-      val req = new HttpGet(uri)
-      val handler = new BasicResponseHandler
-      val body = client.execute(req, handler)
-      client.getConnectionManager.shutdown
+      try {
+	      val client = new DefaultHttpClient
+   	   val encoded = URLEncoder.encode(token, "UTF-8")
+      	val uri = Service.GraphAPI+"/"+id+Service.Friends+"?"+Service.Token+"="+encoded
+	      val req = new HttpGet(uri)
+   	   val handler = new BasicResponseHandler
+      	val body = client.execute(req, handler)
+	      client.getConnectionManager.shutdown
+	      process(body)
+		} catch {
+			case unknown:HttpResponseException => {
+				log.slf4j.error("Bad request - unknown user")
+				self stop
+			}
+		}
+		
+	   def process(body:String) = {
+	        //
+   	     // reset
+      	  //
+	      fcount = 0
+   	   flocated = 0
 
-        //
-        // reset
-        //
-      fcount = 0
-      flocated = 0
-
-      //
-      // using jackson here to parse of json - appears to run much faster than dispatch
-      // though this isn't fully confirmed yet
-      //
-      val f = new JsonFactory
-      val jp = f.createJsonParser(body getBytes)
-      var current = jp.nextToken
+	      //
+   	   // using jackson here to parse of json - appears to run much faster than dispatch
+      	// though this isn't fully confirmed yet
+	      //
+   	   val f = new JsonFactory
+      	val jp = f.createJsonParser(body getBytes)
+	      var current = jp.nextToken
       
-      val router = loadBalancerActor(new SmallestMailboxFirstIterator(List(Actor.actorOf[Locator].start, Actor.actorOf[Locator].start)));
+   	   val router = loadBalancerActor(new SmallestMailboxFirstIterator(List(Actor.actorOf[Locator].start, Actor.actorOf[Locator].start)));
 
-        //
-        // process the json linearly and for each friend id 
-        // spin up a locator actor whose job it is to issue another
-        // query to find the friend's city. this will create an actor per
-        // friend which currently all use the global dispatcher so the requests will
-        // be spread across the default thread pool 
-        // (need to check if ~16 simultaneous requests from the same IP get blocked by maps...)
-        //
-      while (jp.nextToken() != JsonToken.END_OBJECT) {
+	        //
+   	     // process the json linearly and for each friend id 
+      	  // spin up a locator actor whose job it is to issue another
+	        // query to find the friend's city. this will create an actor per
+   	     // friend which currently all use the global dispatcher so the requests will
+      	  // be spread across the default thread pool 
+	        // (need to check if ~16 simultaneous requests from the same IP get blocked by maps...)
+   	     //
+	      while (jp.nextToken() != JsonToken.END_OBJECT) {
 
-        var fieldName = jp.getCurrentName
-        current = jp.nextToken
-        if (fieldName == "data") {
-          if (current == JsonToken.START_ARRAY) {
-            while (jp.nextToken != JsonToken.END_ARRAY) {
-              while (jp.nextToken() != JsonToken.END_OBJECT) {
-                fieldName = jp.getCurrentName
-                jp.nextToken
-                if (fieldName == "id") {
-                  val fid = jp.getText
+	        var fieldName = jp.getCurrentName
+   	     current = jp.nextToken
+      	  if (fieldName == "data") {
+         	 if (current == JsonToken.START_ARRAY) {
+            	while (jp.nextToken != JsonToken.END_ARRAY) {
+	              while (jp.nextToken() != JsonToken.END_OBJECT) {
+   	             fieldName = jp.getCurrentName
+      	          jp.nextToken
+         	       if (fieldName == "id") {
+            	      val fid = jp.getText
                   
-                  //
-                  // send msg to locate friend, reply will come back later
-                  // 
-                  router ! Locate(fid, token)
-                  log.slf4j.info("friend {}",fid)
-                  //
-                  // track total number of friends
-                  //
-                  fcount += 1
-                }
-              }
-            }
-          } else {
-            jp.skipChildren
-          }
-        } else {
-          jp.skipChildren
-        }
-      }
-      jp.close // ensure resources get cleaned up timely and properly
+	                  //
+   	               // send msg to locate friend, reply will come back later
+      	            // 
+         	         router ! Locate(fid, token)
+            	      log.slf4j.info("friend {}",fid)
+               	   //
+                  	// track total number of friends
+	                  //
+   	               fcount += 1
+      	          }
+         	     }
+	            }
+   	       } else {
+      	      jp.skipChildren
+          	}
+	        } else {
+   	       jp.skipChildren
+      	  }
+	      }
+   	   jp.close // ensure resources get cleaned up timely and properly
       
-      log.slf4j.info("{} friends processed; locating...", fcount)
-    }
-
+      	log.slf4j.info("{} friends processed; locating...", fcount)
+	  }
+	}
         //
         // we get this back from the location actor once a id is located
         //
