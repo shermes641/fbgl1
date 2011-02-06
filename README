@@ -1,1 +1,97 @@
-Hacking Akka, Facebook Graph API, WebGL and other things...
+fbgl1 - Hacking Akka, Facebook Graph API, WebGL and other things...
+
+Quick Intro
+===========
+A little while back, I posted a gist showing how to perform a server-side OAuth 
+validation using Akka Mist and the Facebook Graph API.  Shortly thereafter, I
+wanted to experiment a bit more with the API and use WebGL to do some data viz.
+Unfortunately, it was hard to find more than a few hours here and there to really
+do anything useful, so I figured I'd share this anyhow in its current state 
+as a sample for Akka and/or WebGL hackers...
+
+This is still very rough around the edges but to be fair, isn't any kind of
+production quality site or client.  Some caveats:
+   - The very first time you hit the web app, 12 pretty large Earth texture 
+     images will need to be loaded. Your initial experience will depend 
+     largely on your download speed and GPU.  Things might appear hung or
+     (more typically) just black - you'll just need to wait.  For example,
+     my quad core Linux box with 8600GTS hardwired only pauses slightly,
+     my Mac mini on wireless is annoying at best... YMMV.
+   - Remember it's a WebGL demo, it needs a reasonable GPU...
+   
+   
+Overview
+========
+Obviously what's going on here is that your Facebook account is allowing the 
+app to access your friends list and in particular their current location and
+hometown.  The former is preferred but the latter is used in its absence.  
+If neither is available, that friend is ignored.  This happens frequently
+which is why you'll find that the total loaded is almost always fewer than
+you, in fact, have. Friends are aggregated together into common locations.
+
+Each location is then thrown against the Google Maps API to acquire it's 
+latitude & longitude.  Locations are queued for query by a web worker 
+(should be around 4/sec) and should appear as they are loaded.  Locations
+will be updated (if applicable) as more friends are found (on the server) 
+and added to the location's payload.
+
+When a location node is loaded/updated, cubemaps are composed of all the
+profile pictures.  The total number of nodes that may be drawn at a single
+location is friends/6 + 1.  Locations with more than 1 node will 'fountain'
+them over time.  The number of fountain nodes is initally capped at 5. This
+can be adjusted using the slider.  Selecting 'max nodes' will discard the
+slider value and add all friend nodes to the fountain.  The fountain isn't
+exactly physically correct as it ensures the node falls back into the origin
+rather than continuing along its motion vector.  There is a "co-location" 
+tolerance as well.  This is added for cleanliness.  It is used to determine
+if locations are too close to each other and, if so, to treat them as a 
+fountain.  So... an example - you've got friends in San Francisco, CA
+as well as Berkeley - these will fall within the same tolerance and the
+Berekely node will be 'fountained' even if there are less than 6 friends.
+Basically this is just so you can see pictures.  
+
+Why bother with a server component? This is a fair question. Basically
+as already noted, this started as a server-side OAuth example.  Nothing
+prevents all of that logic from running in the client.  That said, the
+server is used to do work in anticipation of being called again by the 
+client, reduces the number of connections the client would otherwise
+have to make and, if nothing else, illustrates some more usage of http
+in akka.
+
+Why is the "subnets" checkbox disabled? Just because it's useless unless
+your friend's friends also grant access to your app. I thought it might
+be cool to show but never really had the time to connect it all up fully.
+
+
+Building, etc
+=============
+Use SBT 0.7.5.RC0 and build the project.
+Create an Akka deployment.
+Copy the fbgl1.jar to the deploy/ folder 
+Copy the oauth jars (2) from the lib_managed/ folder to deploy/
+Copy the contents of src/main/resources/ to the config/ folder 
+Copy the contents of src/main/html/ to a new folder called root/ (at the same level as deploy/)
+
+
+Usage
+=====
+http://host:9998/index.html?user_id=...	
+
+where user_id is your Facebook user ID (not your account name).
+
+
+Other stuff
+===========
+The shaders are pretty simple. In the vertex shader, there is a quaternion rotation
+example.  In the fragment shader, earth textures are being blended together month-to-month 
+to do that passing seasons effect.
+
+The network polyarcs are computed in javascript when the friend location 
+is first loaded. I added code on the server to do this later and never
+had the time to update the protocol... which would have only served as a
+trivial example of more direct VBO injection from XHR.  The trig is simple
+so it shouldn't really impact things that much.
+
+FPS - it's not the friends it's the locations.  I've tested over 600 friends
+at 60+ locations with a framerate in the low 20s... which is pretty bad I'll admit.
+
