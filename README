@@ -3,21 +3,10 @@ fbgl1 - Hacking Akka, Facebook Graph API, WebGL and other things...
 Quick Intro
 ===========
 A little while back, I posted a gist showing how to perform a server-side OAuth 
-validation using Akka Mist and the Facebook Graph API.  Shortly thereafter, I
-wanted to experiment a bit more with the API and use WebGL to do some data viz.
-Unfortunately, it was hard to find more than a few hours here and there to really
-do anything useful, so I figured I'd share this anyhow in its current state 
-as a sample for Akka and/or WebGL hackers...
-
-This is still very rough around the edges but to be fair, isn't any kind of
-production quality site or client.  Some caveats:
-   - The very first time you hit the web app, 12 pretty large Earth texture 
-     images will need to be loaded. Your initial experience will depend 
-     largely on your download speed and GPU.  Things might appear hung or
-     (more typically) just black - you'll just need to wait.  For example,
-     my quad core Linux box with 8600GTS hardwired only pauses slightly,
-     my Mac mini on wireless is annoying at best... YMMV.
-   - Remember it's a WebGL demo, it needs a reasonable GPU...
+validation using Akka Mist, Leeloo and the Facebook Graph API. This is an 
+iteration of that experiment that also mixes in some WebGL and web workers.
+Anyway, it's posted as a simple sample for looking at some of these pieces
+in an introductory way.  
    
    
 Overview
@@ -31,9 +20,9 @@ you, in fact, have. Friends are aggregated together into common locations.
 
 Each location is then thrown against the Google Maps API to acquire it's 
 latitude & longitude.  Locations are queued for query by a web worker 
-(should be around 4/sec) and should appear as they are loaded.  Locations
-will be updated (if applicable) as more friends are found (on the server) 
-and added to the location's payload.
+and should appear as they are loaded.  Locations will be updated 
+(if applicable) as more friends are found (on the server) and added 
+to the location's payload.
 
 When a location node is loaded/updated, cubemaps are composed of all the
 profile pictures.  The total number of nodes that may be drawn at a single
@@ -55,8 +44,8 @@ as already noted, this started as a server-side OAuth example.  Nothing
 prevents all of that logic from running in the client.  That said, the
 server is used to do work in anticipation of being called again by the 
 client, reduces the number of connections the client would otherwise
-have to make and, if nothing else, illustrates some more usage of http
-in akka.
+have to make and, if nothing else, illustrates some more akka-ness:
+http & load balancing actors
 
 Why is the "subnets" checkbox disabled? Just because it's useless unless
 your friend's friends also grant access to your app. I thought it might
@@ -80,6 +69,30 @@ http://host:9998/index.html?user_id=...
 where user_id is your Facebook user ID (not your account name).
 
 
+Issues & Caveats
+================
+Almost inevitably, regardless of your deployment, the first time you hit the site 
+it will appear to hang. This is a combination of a couple things first of which 
+is the texture images, the rest is a function of your core count and bandwidth.  
+I decided to add all 12 months to the globe texturing mostly for completeness 
+and it looks nicer IMO.  Given this is just sample code, it hardly seemed to much matter, 
+and besides they will end up (mostly) cached.  
+Nevertheless, until they are, your world will be black or very dark.
+
+There is a little indication of what's going on otherwise: 
+"Loading user..." indicates a request was made to the server to get the geo-position of the user.
+"Loading friends..." indicates a request was made to the server to get a list of all friend locations.
+"Loading x from y" appears and will be updated as new locations appear or are updated with additional data.
+
+I always had the location querying timer set to fire 4 or 5 times per second
+which is fine on a good network and multi-core box but when I deployed the
+server on an EC2 instance and tried it on a wireless mac mini it the experience
+was annoying at best.
+
+This is a WebGL app afterall, it needs a GPU and it does do alot of background processing
+so the more cores the better.
+
+ 
 Other stuff
 ===========
 The shaders are pretty simple. In the vertex shader, there is a quaternion rotation
@@ -94,4 +107,13 @@ so it shouldn't really impact things that much.
 
 FPS - it's not the friends it's the locations.  I've tested over 600 friends
 at 60+ locations with a framerate in the low 20s... which is pretty bad I'll admit.
+
+The basic structure and functionality of the WebGL stuff started from a Webkit demo; and
+those bits fall under Apple's copyright notice found in the git.
+The CRC-32 javascript was snipped from a useful blog post.
+
+Given I barely had the spare midnight hour to scratch this together, it's not being
+maintained in anyway. Everything herein that is mine, is hereby made available without
+restriction in the public domain.
+
 
