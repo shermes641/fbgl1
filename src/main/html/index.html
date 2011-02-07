@@ -140,7 +140,12 @@
 						}
 					}
 					
-					query = setInterval("query_locations()", 250);
+					//
+					// too frequent seems to really hurt weaker clients
+					// so leave at 1 sec to give the browser a chance to
+					// do its thing
+					//					
+					query = setInterval("query_locations()", 1000);
 				}
 					//
 					// location info + ids
