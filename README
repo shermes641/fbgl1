@@ -87,10 +87,15 @@ There is a little indication of what's going on otherwise:
 I always had the location querying timer set to fire 4 or 5 times per second
 which is fine on a good network and multi-core box but when I deployed the
 server on an EC2 instance and tried it on a wireless mac mini it the experience
-was annoying at best.
+was annoying at best.  After that, I changed the interval to 1 second.  So it could
+take a while, depending on how quickly everything gets organized on the backend,
+to eventually cycle through every location and get all available geo-located friends.
 
 This is a WebGL app afterall, it needs a GPU and it does do alot of background processing
 so the more cores the better.
+
+The server is balancing requests to Google Maps with two locator actors.  This makes it slower
+than _possible_ but in practice their servers were bouncing too many requests back when flooded.
 
  
 Other stuff
@@ -106,7 +111,7 @@ trivial example of more direct VBO injection from XHR.  The trig is simple
 so it shouldn't really impact things that much.
 
 FPS - it's not the friends it's the locations.  I've tested over 600 friends
-at 60+ locations with a framerate in the low 20s... which is pretty bad I'll admit.
+at 60+ locations with a framerate in the mid 20s... which is pretty bad I'll admit.
 
 The basic structure and functionality of the WebGL stuff started from a Webkit demo; and
 those bits fall under Apple's copyright notice found in the git.
